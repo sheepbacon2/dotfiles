@@ -186,10 +186,10 @@ bindsym $mod+Ctrl+Shift+Up resize grow height 10 px or 10 ppt
 bindsym $mod+Ctrl+Shift+Down resize shrink height 10 px or 10 ppt
 bindsym $mod+Ctrl+Shift+Left resize grow width 10 px or 10 ppt 
 #alternative keys 
-bindsym $mod+Ctrl+Shift+l resize shrink width 10 px or 10 ppt #right
-bindsym $mod+Ctrl+Shift+k resize grow height 10 px or 10 ppt #up
-bindsym $mod+Ctrl+Shift+j resize shrink height 10 px or 10 ppt #down 
-bindsym $mod+Ctrl+Shift+h resize grow width 10 px or 10 ppt #left
+bindsym $mod+Ctrl+Shift+l resize shrink width 10 px or 10 ppt 
+bindsym $mod+Ctrl+Shift+k resize grow height 10 px or 10 ppt 
+bindsym $mod+Ctrl+Shift+j resize shrink height 10 px or 10 ppt 
+bindsym $mod+Ctrl+Shift+h resize grow width 10 px or 10 ppt 
 
 #move to workspace previous with alt key and mod
 bindsym $mod+Shift+Left workspace prev
@@ -204,5 +204,5 @@ exec  i3-msg 'workspace 2; exec discord'
 for_window [class="(?i)Thunar"] floating enable
 for_window [class="firefox" title="Library"] floating enable
 bindsym Print exec scrot $HOME/Pictures/ScreenShots/`date +%Y-%m-%d_%H:%M:%S`.png
-
+for_window [class="(?i)qBittorrent"] floating enable
 for_window [class="(?i)ranger"] floating enable
