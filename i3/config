@@ -7,9 +7,10 @@
 # i3 config file (v4)
 #
 # Please see https://i3wm.org/docs/userguide.html for a complete reference!
-
+#aliases for config
+set $bg /mnt/hdd/Pictures/background
 set $mod Mod4
-
+set $script_path $HOME/Desktop
 # Font for window titles. Will also be used by the bar unless a different font
 # is used in the bar {} block below.
 font pango:monospace 8
@@ -42,8 +43,6 @@ bindsym XF86AudioMicMute exec --no-startup-id pactl set-source-mute @DEFAULT_SOU
 
 # Use Mouse+$mod to drag floating windows to their wanted position
 floating_modifier $mod
-#polybar that i keep messing up
-exec_always --no-startup-id $HOME/.config/polybar/launch.sh --forest
 # start a terminal
 bindsym $mod+Return exec alacritty
 
@@ -118,6 +117,13 @@ set $ws7 "7"
 set $ws8 "8"
 set $ws9 "9"
 set $ws10 "10"
+set $ws11 "11"
+set $ws12 "12"
+set $ws13 "13"
+set $ws14 "14"
+set $ws15 "15"
+set $ws16 "16"
+set $ws17 "17"
 
 # switch to workspace
 bindsym $mod+1 workspace number $ws1
@@ -130,6 +136,13 @@ bindsym $mod+7 workspace number $ws7
 bindsym $mod+8 workspace number $ws8
 bindsym $mod+9 workspace number $ws9
 bindsym $mod+0 workspace number $ws10
+bindsym $mod+z workspace number $ws11
+bindsym $mod+x workspace number $ws12
+bindsym $mod+c workspace number $ws13
+bindsym $mod+b workspace number $ws14
+bindsym $mod+n workspace number $ws15
+bindsym $mod+m workspace number $ws16
+bindsym $mod+y workspace number $ws17
 
 # move focused container to workspace
 bindsym $mod+Shift+1 move container to workspace number $ws1
@@ -142,6 +155,12 @@ bindsym $mod+Shift+7 move container to workspace number $ws7
 bindsym $mod+Shift+8 move container to workspace number $ws8
 bindsym $mod+Shift+9 move container to workspace number $ws9
 bindsym $mod+Shift+0 move container to workspace number $ws10
+bindsym $mod+Shift+z move container to workspace number $ws11
+bindsym $mod+Shift+x move container to workspace number $ws12
+bindsym $mod+Shift+b move container to workspace number $ws14
+bindsym $mod+Shift+n move container to workspace number $ws15
+bindsym $mod+Shift+m move container to workspace number $ws16
+bindsym $mod+Shift+y move container to workspace number $ws17
 
 # reload the configuration file
 bindsym $mod+Shift+c reload
@@ -162,10 +181,6 @@ bindsym $mod+Shift+g gaps inner all set 0;gaps outer all set 0
 #smart_gaps on
 # You can also use any non-zero value if you'd like to have a border
 for_window [class=".*"] border pixel 0
-exec_always feh --bg-fill $HOME/Pictures/18-183599_woods-wallpaper-hd.jpg 
-bindsym $mod+Shift+f exec firefox
-bindsym $mod+Shift+d exec discord
-bindsym $mod+Shift+v exec librewolf
 # Resizing without pressing resize mode
 #
 #
@@ -197,12 +212,32 @@ bindsym $mod+Shift+Right workspace next
 bindsym $mod+Shift+h workspace prev
 bindsym $mod+Shift+l workspace next
 
-#B to go back a word W to go forward a word 
+#background
+exec_always feh --bg-fill $bg/High_resolution_wallpaper_background_ID_77700086359.jpg
+
+bindsym $mod+Shift+Mod1+Left move container to workspace prev
+bindsym $mod+Shift+Mod1+Right move container to workspace next
+bindsym $mod+Shift+Mod1+h move container to workspace prev
+bindsym $mod+Shift+Mod1+l move container to workspace next
+#startup programs
+exec_always --no-startup-id $HOME/.config/polybar/launch.sh --forest
 exec_always --no-startup-id picom
-exec  i3-msg 'workspace 1; exec firefox'
-exec  i3-msg 'workspace 2; exec discord'
+exec  i3-msg 'workspace 8; exec firefox'
+exec  i3-msg 'workspace number $ws9; exec discord'
+#class functions floating
 for_window [class="(?i)Thunar"] floating enable
 for_window [class="firefox" title="Library"] floating enable
+#window workspace setting
+assign [class="firefox"]$ws12
+assign [class="discord"]$ws13
+assign [class="libreoffice"]$ws14
+assign [class="LibreWolf"]$ws15
+assign [class="vlc"]$ws16
+assign [class="qBittorrent"]$ws17
+#exec functions
+bindsym $mod+F1 exec $script_path/regscreen.sh
+bindsym $mod+F2 exec $script_path/tv.sh
+bindsym $mod+Print exec "flameshot gui"
+bindsym $mod+Shift+f exec firefox
+bindsym $mod+Shift+v exec librewolf
 bindsym Print exec scrot $HOME/Pictures/ScreenShots/`date +%Y-%m-%d_%H:%M:%S`.png
-for_window [class="(?i)qBittorrent"] floating enable
-for_window [class="(?i)ranger"] floating enable
