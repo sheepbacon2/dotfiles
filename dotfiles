@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Explicit, backed-up dotfile installation and manual Git synchronization."""
+import argparse
+import datetime
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+REPO = Path(__file__).resolve().parent
+HOME = Path.home()
+STATE = HOME / '.config/dotfiles/profile'
+
+
+def git(*args, capture=False):
+    return subprocess.run(['git', '-C', str(REPO), *args], check=True,
+                          text=True, stdout=subprocess.PIPE if capture else None).stdout
+
+
+def install(profile, apply=False):
+    entries = {}
+    for base in (REPO / 'shared', REPO / 'profiles' / profile):
+        if not base.is_dir():
+            raise RuntimeError(f'Missing source directory: {base}')
+        for source in sorted(base.rglob('*')):
+            if source.is_symlink():
+                raise RuntimeError(f'Source symlinks are not supported: {source}')
+            if source.is_file():
+                entries[source.relative_to(base)] = source
+    entries[Path('.local/bin/dotfiles')] = REPO / 'dotfiles'
+    backup = HOME / 'dotfiles-backups' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    changes = []
+    for relative, source in entries.items():
+        target = HOME / relative
+        if target.is_symlink() and target.resolve() == source.resolve():
+            continue
+        # Never replace a directory with a file.
+        if target.is_dir() and not target.is_symlink():
+            raise RuntimeError(f'Directory conflicts with file: {target}')
+        # Existing directory symlinks (e.g. ~/.local) are intentionally supported.
+        parent = target.parent
+        while parent != HOME:
+            if parent.exists() and not parent.is_dir():
+                raise RuntimeError(f'Parent is not a directory: {parent}')
+            parent = parent.parent
+        changes.append((relative, source, target))
+    for relative, source, target in changes:
+        exists = os.path.lexists(target)
+        print(f'{"BACKUP + LINK" if exists else "LINK"} {target} -> {source}')
+        if apply:
+            if exists:
+                saved = backup / relative
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                if target.is_symlink():
+                    saved.symlink_to(os.readlink(target))
+                    target.unlink()
+                else:
+                    shutil.copy2(target, saved)
+                    target.unlink()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source)
+    if apply:
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(profile + '\n')
+        print(f'Installed {profile}; backups (if needed): {backup}')
+    else:
+        print(f'Preview only: {len(changes)} changes. Add --apply to install.')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('install', help='Preview links, or back up files and install')
+    p.add_argument('profile', choices=['desktop', 'laptop'])
+    p.add_argument('--apply', action='store_true')
+    sub.add_parser('status', help='Show pending changes')
+    sub.add_parser('diff', help='Review tracked changes')
+    sub.add_parser('update', help='Fast-forward from GitHub; requires clean checkout')
+    p = sub.add_parser('save', help='Commit reviewed changes and push to GitHub')
+    p.add_argument('message')
+    p.add_argument('--yes', action='store_true', help='Skip interactive review confirmation')
+    sub.add_parser('push', help='Retry pushing an existing commit')
+    args = parser.parse_args()
+    if args.command == 'install':
+        install(args.profile, args.apply)
+    elif args.command == 'status':
+        git('status', '--short')
+    elif args.command == 'diff':
+        git('diff', 'HEAD')
+    elif args.command == 'update':
+        if not STATE.is_file():
+            raise RuntimeError('Install a profile first.')
+        profile = STATE.read_text().strip()
+        if profile not in ('desktop', 'laptop'):
+            raise RuntimeError('Invalid installed profile.')
+        if git('status', '--porcelain', capture=True).strip():
+            raise RuntimeError('Local changes exist. Review and save them before updating.')
+        git('pull', '--ff-only')
+        install(profile, True)
+        print('Updated. Open a new shell; reload i3 when ready (Mod+Shift+c).')
+    elif args.command == 'save':
+        git('status', '--short')
+        git('diff', 'HEAD', '--stat')
+        if not args.yes and input('Reviewed changes and checked for secrets? Commit and push [y/N] ').lower() != 'y':
+            return
+        # Keep unrelated files outside the managed paths out of the commit.
+        git('add', '--', 'shared', 'profiles', 'dotfiles', 'README.md', '.gitignore')
+        if git('diff', '--cached', '--name-only', capture=True).strip():
+            git('commit', '-m', args.message)
+        git('push', 'origin', 'HEAD')
+    elif args.command == 'push':
+        git('push', 'origin', 'HEAD')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+        print(f'dotfiles: {exc}', file=sys.stderr)
+        sys.exit(1)

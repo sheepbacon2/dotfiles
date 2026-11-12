@@ -1,0 +1,57 @@
+# i3 configuration (v4)
+# Shared paths, modifier, and monitor outputs
+set $mod Mod4
+set $bg $HOME/Pictures
+set $script_path $HOME/.local/bin
+set $layout $HOME/.i3
+include $HOME/.config/i3/outputs.conf
+set $refresh_i3status killall -SIGUSR1 i3status
+
+# Workspace definitions precede rules and bindings that use them.
+include $HOME/.config/i3/workspaces.conf
+include $HOME/.config/i3/movements.conf
+include $HOME/.config/i3/keybinds.conf
+include $HOME/.config/i3/modes.conf
+include $HOME/.config/i3/mouse.conf
+include $HOME/.config/i3/scratchpads.conf
+include $HOME/.config/i3/windowclasses.conf
+include $HOME/.config/i3/startup.conf
+
+# Appearance and general behavior
+font pango:JetBrainsMono Nerd Font 14
+floating_modifier $mod
+workspace_auto_back_and_forth yes
+
+bar {
+    position top
+    status_command SCRIPT_DIR=$HOME/.config/i3blocks/scripts i3blocks
+    height 40
+
+    # Zero-width space (U+200B) hides the separator.
+    separator_symbol "​"
+
+    colors {
+        background #222222
+        statusline #fafafa
+        separator #666666
+
+        focused_workspace  #4c78dd #4c78dd #ffffff
+        active_workspace   #283877 #283877 #ffffff
+        inactive_workspace #333333 #333333 #888888
+        urgent_workspace   #2f343a #2f343a #ffffff
+        binding_mode       #2f343a #24343a #ffffff
+    }
+}
+# Borders and window colors
+smart_gaps on
+for_window [class=".*"] border pixel 2
+smart_borders on
+# class                 border  backgr. text    indicator child_border
+client.focused          #99B0A5 #5664F5 #ffffff #2e9ef4   #28775D
+client.focused_inactive #333333 #31A889 #ffffff #484e50   #5f676a
+client.unfocused        #333333 #222222 #888888 #292d2e   #222222
+client.urgent           #2f343a #CF3E3E #ffffff #900000   #900000
+client.placeholder      #000000 #0c0c0c #ffffff #000000   #0c0c0c
+
+client.background       #ffffff
+
