@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+
+state_file="${XDG_RUNTIME_DIR:-/tmp}/i3-unmarked-scratchpad-$UID"
+
+tree="$(i3-msg -t get_tree)"
+
+# Get all actual window IDs belonging to scratchpad containers
+# that contain NO marks.
+mapfile -t windows < <(
+    jq -r '
+        [
+            .. | objects
+            | select(
+                .type == "floating_con"
+                and (.scratchpad_state // "none") != "none"
+            )
+            | select(
+                ([.. | objects | (.marks? // [])[]] | length) == 0
+            )
+            | [.. | objects | select(.window? != null) | .id][0]
+        ]
+        | map(select(. != null))
+        | unique
+        | .[]
+    ' <<< "$tree"
+)
+
+# No unmarked scratchpads
+((${#windows[@]} == 0)) && exit 0
+
+
+# Get the unmarked scratchpad windows that are currently HIDDEN
+# inside __i3_scratch.
+mapfile -t hidden < <(
+    jq -r '
+        .. | objects
+        | select(.name == "__i3_scratch")
+        | .floating_nodes[]
+        | select(
+            ([.. | objects | (.marks? // [])[]] | length) == 0
+        )
+        | [.. | objects | select(.window? != null) | .id][0]
+        | select(. != null)
+    ' <<< "$tree"
+)
+
+declare -A is_hidden
+
+for id in "${hidden[@]}"; do
+    is_hidden["$id"]=1
+done
+
+
+# Find any unmarked scratchpad that is currently visible.
+visible=""
+
+for id in "${windows[@]}"; do
+    if [[ -z "${is_hidden[$id]+yes}" ]]; then
+        visible="$id"
+        break
+    fi
+done
+
+
+# ---------------------------------------------------------
+# If one is currently visible:
+# hide it and STOP.
+#
+# Do NOT immediately show the next one.
+# ---------------------------------------------------------
+
+if [[ -n "$visible" ]]; then
+    i3-msg -q "[con_id=$visible] scratchpad show"
+    exit 0
+fi
+
+
+# ---------------------------------------------------------
+# Nothing is visible.
+# Pick the NEXT scratchpad in the rotation.
+# ---------------------------------------------------------
+
+last=""
+
+if [[ -f "$state_file" ]]; then
+    last="$(cat "$state_file")"
+fi
+
+next_index=0
+
+# Find the last shown window and advance one position.
+for i in "${!windows[@]}"; do
+    if [[ "${windows[$i]}" == "$last" ]]; then
+        next_index=$(( (i + 1) % ${#windows[@]} ))
+        break
+    fi
+done
+
+next="${windows[$next_index]}"
+
+
+# Show it.
+i3-msg -q "[con_id=$next] scratchpad show"
+
+# Remember which one we showed.
+echo "$next" > "$state_file"

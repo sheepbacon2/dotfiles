@@ -1,0 +1,291 @@
+#!/home/wes/.local/share/i3-session/venv/bin/python
+"""Save all i3 workspaces; restore snapshots into empty workspaces only."""
+import argparse
+import fcntl
+import json
+import os
+import re
+import copy
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+import psutil
+import i3ipc
+from i3_resurrect import layout, programs, config
+
+ROOT = Path(os.environ.get('I3_SESSION_DIR', str(Path.home()/'.local/share/i3-session/snapshots')))
+
+def tell(message):
+    print(message, flush=True)
+    if shutil.which('notify-send'):
+        subprocess.run(['notify-send', 'i3 session', message], check=False)
+
+def command(i3, text):
+    replies=i3.command(text)
+    if any(not r.success for r in replies):
+        raise RuntimeError(f'i3 rejected: {text}')
+
+def workspace(i3, name):
+    command(i3, 'workspace --no-auto-back-and-forth '+json.dumps(name,ensure_ascii=False))
+
+def has_windows(node):
+    return bool(node.window or node.ipc_data.get("swallows") or any(has_windows(n) for n in node.nodes+node.floating_nodes))
+
+BROWSERS = ('firefox', 'librewolf')
+
+def browser_command(argv):
+    return isinstance(argv,list) and any(any(b in Path(arg).name.lower() for b in BROWSERS) for arg in argv[:3])
+
+def browser_node(node):
+    return any(any(b in rule.get('class','').lower() for b in BROWSERS) for rule in node.get('swallows',[]))
+
+def title_matches(saved):
+    """Upgrade old snapshots in memory too; a display name isn't a swallow rule."""
+    saved=copy.deepcopy(saved)
+    for node in json_nodes(saved):
+        if browser_node(node) and node.get('name'):
+            for rule in node['swallows']:
+                rule['title']='^'+re.escape(node['name'])+'$'
+    return saved
+
+def json_nodes(node):
+    yield node
+    for child in node.get('nodes',[])+node.get('floating_nodes',[]):
+        yield from json_nodes(child)
+
+def reconcile_browsers(i3, target_workspaces):
+    """Swap already mapped browser windows into exact-title placeholders."""
+    tree=i3.get_tree()
+    all_nodes=list(tree.descendants())
+    placeholders=[n for n in all_nodes if n.workspace() and n.workspace().name in target_workspaces
+                  and browser_node(n.ipc_data)]
+    used=set()
+    for placeholder in placeholders:
+        for window in all_nodes:
+            if not window.window or window.ipc_data.get('swallows') or window.id in used:
+                continue
+            props=window.ipc_data.get('window_properties',{})
+            props=dict(props,title=window.name or '')
+            if any(rule.get('title') and all(re.search(pattern,props.get(key,'') or '')
+                   for key,pattern in rule.items() if key in ('class','instance','title','window_role'))
+                   for rule in placeholder.ipc_data.get('swallows',[])):
+                command(i3,f'[con_id={window.id}] swap container with con_id {placeholder.id}')
+                # This ID belongs to the placeholder, now at the old window location.
+                command(i3,f'[con_id={placeholder.id}] kill')
+                used.add(window.id)
+                break
+
+def window_matches(window, rules):
+    props=dict(window.ipc_data.get('window_properties',{}), title=window.name or '')
+    return any(rule and all(re.search(pattern,props.get(key,'') or '')
+        for key,pattern in rule.items() if key in ('class','instance','title','window_role'))
+        for rule in rules)
+
+def existing_application(i3, app, claimed):
+    """One live window satisfies one saved launch, including terminal cwd."""
+    for window in i3.get_tree().descendants():
+        if not window.window or window.ipc_data.get('swallows') or window.id in claimed:
+            continue
+        # Anki Flatpak windows may not expose a host-readable PID.
+        if window.window_class=='Anki' and app['command']==['/usr/bin/flatpak','run','net.ankiweb.Anki']:
+            return window
+        try:
+            pid=programs.get_window_pid(window.ipc_data)
+            if not pid:
+                continue
+            proc=psutil.Process(pid)
+            argv=programs.get_window_command(window.ipc_data.get('window_properties',{}),
+                                             proc.cmdline(),proc.exe())
+            startup_flags={'--start-minimized','--start-in-tray'}
+            if [a for a in argv if a not in startup_flags]!=[a for a in app['command'] if a not in startup_flags]:
+                continue
+            if window.window_class in config.get('terminals',[]):
+                try: cwd=proc.children()[0].cwd()
+                except (psutil.Error, IndexError): cwd=str(Path.home())
+                if Path(cwd)!=Path(app['working_directory']):
+                    continue
+            return window
+        except (psutil.Error, OSError, ValueError):
+            continue
+    return None
+
+def reuse_application(i3, app, target, protected, claimed):
+    window=existing_application(i3,app,claimed)
+    if window is None:
+        return False
+    claimed.add(window.id)
+    # Preserve occupied snapshot workspaces, including windows already in place.
+    if window.workspace() and window.workspace().name in protected:
+        print(f"Already open on {window.workspace().name}: {app['command'][0]}; not relaunched",flush=True)
+        return True
+    placeholders=[n for n in i3.get_tree().descendants() if n.workspace()
+        and n.workspace().name==target and n.ipc_data.get('swallows')]
+    for placeholder in placeholders:
+        if window_matches(window,placeholder.ipc_data['swallows']):
+            command(i3,f'[con_id={window.id}] swap container with con_id {placeholder.id}')
+            command(i3,f'[con_id={placeholder.id}] kill')
+            print(f"Reused existing window: {window.name}",flush=True)
+            return True
+    print(f"Already open: {window.name}; no matching layout slot, not relaunched",flush=True)
+    return True
+
+def save(i3):
+    stamp=datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    staging=Path(tempfile.mkdtemp(prefix='.saving-',dir=ROOT))
+    try:
+        workspaces=i3.get_workspaces()
+        manifest={'created':datetime.now().isoformat(),'workspaces':[], 'warnings':[]}
+        for index, ws in enumerate(workspaces):
+            profile=f'ws-{index}'
+            layout.save(ws.name,False,staging,profile,['class','instance'])
+            layoutfile=staging/f'{profile}_layout.json'
+            layoutfile.write_text(json.dumps(title_matches(json.loads(layoutfile.read_text())),indent=2))
+            programs.save(ws.name,False,staging,profile)
+            appfile=staging/f'{profile}_programs.json'
+            apps=json.loads(appfile.read_text())
+            for con, pid in programs.windows_in_workspace(ws.name,False):
+                if pid: continue
+                cls=con.get('window_properties',{}).get('class','unknown')
+                if cls=='Anki' and Path('/var/lib/flatpak/exports/share/applications/net.ankiweb.Anki.desktop').exists():
+                    apps.append({'command':['/usr/bin/flatpak','run','net.ankiweb.Anki'],'working_directory':str(Path.home())})
+                else:
+                    manifest['warnings'].append(f'{ws.name}: {cls} has no launch command; reopen manually.')
+            appfile.write_text(json.dumps(apps,indent=2))
+            manifest['workspaces'].append({'name':ws.name,'output':ws.output,'focused':ws.focused,'profile':profile})
+        (staging/'session.json').write_text(json.dumps(manifest,indent=2,ensure_ascii=False))
+        staging.rename(ROOT/stamp)
+        temp=ROOT/'.latest-new'
+        temp.symlink_to(stamp)
+        temp.replace(ROOT/'latest')
+    except BaseException:
+        shutil.rmtree(staging,ignore_errors=True)
+        raise
+    tell(f'Saved {len(workspaces)} workspaces: {stamp}' + ('\n'+'\n'.join(manifest['warnings']) if manifest['warnings'] else ''))
+
+def restore(i3, name, dry_run):
+    if name != 'latest' and (Path(name).name != name or name.startswith('.')):
+        raise ValueError('Use a snapshot name from i3-session list.')
+    folder=ROOT/name
+    manifest=json.loads((folder/'session.json').read_text())
+    # Read everything before changing the desktop.
+    entries=[]
+    for ws in manifest['workspaces']:
+        profile=ws['profile']
+        entries.append((ws,title_matches(json.loads((folder/f'{profile}_layout.json').read_text())),json.loads((folder/f'{profile}_programs.json').read_text())))
+    occupied={ws.name for ws in i3.get_tree().workspaces() if has_windows(ws)}
+    outputs={o.name for o in i3.get_outputs() if o.active}
+    restored=[]; skipped=[]; browser_launches={}; claimed=set()
+    protected=occupied & {ws['name'] for ws,_,_ in entries}
+    initial_browser_windows=[n for n in i3.get_tree().descendants() if n.window and
+        any(b in (n.window_class or "").lower() for b in BROWSERS)]
+    for ws, saved, apps in entries:
+        if ws['name'] in occupied:
+            skipped.append(ws['name']); continue
+        print(f"Restore {ws['name']!r}: {len(apps)} applications",flush=True)
+        if dry_run:
+            restored.append(ws['name']); continue
+        workspace(i3,ws['name'])
+        if ws['output'] in outputs:
+            command(i3,'move workspace to output '+json.dumps(ws['output']))
+        command(i3,'layout '+saved.get('layout','splith'))
+        nodes=saved.get('nodes',[])+saved.get('floating_nodes',[])
+        if nodes:
+            with tempfile.NamedTemporaryFile(mode='w',suffix='.json') as f:
+                json.dump(nodes,f); f.flush()
+                command(i3,'append_layout '+json.dumps(f.name))
+        available_before={n.id for n in i3.get_tree().descendants() if n.window and not n.ipc_data.get('swallows')}
+        # argv execution preserves literal arguments; no shell evaluation.
+        for app in apps:
+            argv=app['command']
+            if not isinstance(argv,list):
+                raise ValueError('Saved commands must be argument lists.')
+            if browser_command(argv):
+                # Collect one launch per browser family; never replay URL arguments.
+                key=next((b for b in BROWSERS if any(b in arg.lower() for arg in argv[:3])), 'firefox')
+                browser_launches.setdefault(key,argv)
+                continue
+            claimed.update(n.id for n in i3.get_tree().descendants() if n.window and n.id not in available_before)
+            if reuse_application(i3,app,ws['name'],protected,claimed):
+                continue
+            cwd=Path(app['working_directory'])
+            subprocess.Popen(argv,cwd=cwd if cwd.is_dir() else Path.home(),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+        restored.append(ws['name'])
+        # Give non-browser applications time to map on their launch workspace.
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            current=next((n for n in i3.get_tree().workspaces() if n.name==ws['name']),None)
+            if current is None or not any(n.ipc_data.get('swallows')
+                    and not browser_node(n.ipc_data) for n in current.descendants()):
+                break
+            time.sleep(.2)
+        current=next((n for n in i3.get_tree().workspaces() if n.name==ws['name']),None)
+        if current:
+            claimed.update(n.id for n in current.descendants() if n.window and not n.ipc_data.get('swallows'))
+    if not dry_run:
+        # All placeholders exist before Firefox restores multiple windows.
+        reconcile_browsers(i3,set(restored))
+        for family,argv in browser_launches.items():
+            # Even if the window is on another workspace, don't launch again.
+            if any(family in (n.window_class or '').lower() for n in initial_browser_windows):
+                continue
+            running=False
+            for proc in psutil.process_iter(['name','uids']):
+                try:
+                    if proc.info['uids'].real==os.getuid() and family in (proc.info['name'] or '').lower():
+                        running=True
+                        break
+                except (psutil.Error, AttributeError):
+                    continue
+            if running:
+                continue
+            # Avoid passing old URLs or other instance's profile to Firefox.
+            # Multi-profile recovery should be started manually with the right profile.
+            if any(arg in ('-P','--profile','-profile','--no-remote','-no-remote') for arg in argv[1:]):
+                print('Restore this browser profile manually:',family,flush=True)
+                continue
+            subprocess.Popen(([argv[0],'run',argv[2]] if Path(argv[0]).name=='flatpak' and len(argv)>2 and argv[1]=='run' else [argv[0]]),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,start_new_session=True)
+        pending=[]
+        deadline=time.monotonic()+20
+        while restored and time.monotonic()<deadline:
+            reconcile_browsers(i3,set(restored))
+            pending=[n for n in i3.get_tree().descendants() if n.workspace() and
+                     n.workspace().name in restored and browser_node(n.ipc_data)]
+            if not pending: break
+            time.sleep(.3)
+        if restored and pending:
+            tell(f'{len(pending)} browser windows still need matching titles. Restore the browser session or select the saved active tabs; no extra browser launches were made.')
+    if not dry_run:
+        focused=next((w['name'] for w,_,_ in entries if w['focused']),None)
+        if focused: workspace(i3,focused)
+    tell(f"{'Preview' if dry_run else 'Restore complete'}: {len(restored)} restored; {len(skipped)} occupied workspaces skipped."+ (' Skipped: '+', '.join(skipped) if skipped else ''))
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',choices=['save','restore','list','choose'])
+    parser.add_argument('snapshot',nargs='?',default='latest')
+    parser.add_argument('--dry-run',action='store_true')
+    args=parser.parse_args()
+    os.umask(0o077); ROOT.mkdir(parents=True,exist_ok=True)
+    with (ROOT/'.lock').open('w') as lock:
+        try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError: raise RuntimeError('Another session action is still running.')
+        names=sorted((p.name for p in ROOT.iterdir() if not p.is_symlink() and (p/'session.json').is_file()),reverse=True)
+        if args.action=='list':
+            print('\n'.join(names)); return
+        if args.action=='choose':
+            selected=subprocess.run(['rofi','-dmenu','-i','-p','Restore i3 snapshot'],input='\n'.join(names),text=True,capture_output=True)
+            if selected.returncode or not selected.stdout.strip(): return
+            args.snapshot=selected.stdout.strip()
+        i3=i3ipc.Connection()
+        if args.action=='save': save(i3)
+        else: restore(i3,args.snapshot,args.dry_run)
+
+if __name__=='__main__':
+    try: main()
+    except Exception as exc:
+        tell(f'Failed: {exc}'); sys.exit(1)

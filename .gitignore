@@ -7,3 +7,11 @@
 __pycache__/
 .DS_Store
 *.bak-*
+
+# Track managed scripts inside .local.
+!shared/.local/
+shared/.local/*
+!shared/.local/bin/
+!profiles/*/.local/
+profiles/*/.local/*
+!profiles/*/.local/bin/

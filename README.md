@@ -109,3 +109,16 @@ HOME. Do not recursively copy over live symlinks, which could modify repository
 files. The pre-migration repository is also saved locally under
 ~/dotfiles-backups/20261112-103054/repository-before-migration, and its uncommitted
 changes are preserved in the named pre-migration Git stash.
+
+## Personal scripts
+
+Scripts from `~/.local/bin` are saved in `shared/.local/bin`; NVIDIA monitor
+scripts and their layouts are in `profiles/desktop/.local/bin`. Executable
+permissions are preserved. The installer links these files on the selected
+profile; importing them does not replace existing local files. Until installed,
+copy edits from those local files back into the repository before saving.
+
+The third-party `ahk_x11.AppImage`, Python runtime symlink, `.idea` metadata,
+and obsolete `mousepos.sh` link are excluded. Scripts retain their current
+behavior and personal paths; review those paths before using another machine.
+`i3-session` requires its existing virtual environment and i3-resurrect setup.

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+mark="$1"
+selector="$2"
+
+if [ -z "$mark" ]; then
+    echo "Usage: i3-scratch-toggle MARK '[optional i3 selector]'"
+    exit 1
+fi
+
+# Check if a window with this mark exists anywhere
+mark_exists() {
+    i3-msg -t get_tree | jq -e --arg mark "$mark" '
+        recurse((.nodes[]?, .floating_nodes[]?))
+        | select((.marks // []) | index($mark))
+    ' >/dev/null
+}
+
+# Check if the marked window is currently hidden in the scratchpad
+mark_in_scratchpad() {
+    i3-msg -t get_tree | jq -e --arg mark "$mark" '
+        recurse((.nodes[]?, .floating_nodes[]?))
+        | select(.name == "__i3_scratch")
+        | recurse((.nodes[]?, .floating_nodes[]?))
+        | select((.marks // []) | index($mark))
+    ' >/dev/null
+}
+
+if mark_exists; then
+    if mark_in_scratchpad; then
+        # Marked window is hidden, so show it
+        i3-msg "[con_mark=\"$mark\"] scratchpad show"
+    else
+        # Marked window exists but is visible/not in scratchpad, so hide it
+        i3-msg "[con_mark=\"$mark\"] move scratchpad"
+    fi
+else
+    # No marked window exists yet, so create it
+    if [ -n "$selector" ]; then
+        i3-msg "$selector mark --replace $mark, move scratchpad"
+    else
+        i3-msg "mark --replace $mark, move scratchpad"
+    fi
+fi

@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Preview downloaded palettes; only "apply" changes the saved configuration.
+set -euo pipefail
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/dunst
+presets=$config_dir/presets
+config=$config_dir/dunstrc
+
+list_themes() {
+    local file
+    for file in "$presets"/*.conf; do
+        [[ -f $file ]] || continue
+        file=${file##*/}
+        printf '%s\n' "${file%.conf}"
+    done
+}
+
+samples() {
+    notify-send -a 'Dunst theme preview' -u normal -t 8000 \
+        -h string:x-dunst-stack-tag:dunst-theme-text \
+        "Theme: $1" $'Normal notification — JetBrainsMono Nerd Font\nBold: <b>Connected</b>, glyph: '
+    notify-send -a 'Dunst theme preview' -u normal -t 8000 \
+        -h string:x-dunst-stack-tag:dunst-theme-progress -h int:value:65 \
+        'Download progress' 'Compare spacing, colors, and the progress bar.'
+}
+
+action=${1:-menu}
+case $action in
+    list) list_themes; exit 0 ;;
+    help|-h|--help)
+        printf '%s\n' 'dunst-theme                  Open the preview picker' \
+            'dunst-theme preview NAME     Preview until reload/restart' \
+            'dunst-theme apply NAME       Save a theme (backs up dunstrc)' \
+            'dunst-theme restore          Reload your saved configuration' \
+            'dunst-theme apply original   Save your pre-preview configuration' \
+            'dunst-theme list             List themes'
+        exit 0 ;;
+    restore)
+        dunstctl reload "$config"
+        samples 'saved configuration'
+        exit 0 ;;
+    menu)
+        name=$(list_themes | dmenu -i -l 8 -p 'Preview Dunst theme:') || exit 0
+        [[ -n $name ]] || exit 0
+        action=preview ;;
+    preview|apply) name=${2:-} ;;
+    *) printf 'Unknown command: %s. Use dunst-theme help.\n' "$action" >&2; exit 2 ;;
+esac
+
+if [[ ! $name =~ ^[a-z0-9-]+$ || ! -f $presets/$name.conf ]]; then
+    printf 'Unknown theme: %s. Use dunst-theme list.\n' "$name" >&2
+    exit 2
+fi
+
+if [[ $action == apply ]]; then
+    mkdir -p "$presets/backups"
+    backup=$(mktemp "$presets/backups/dunstrc.XXXXXXXX")
+    cp -- "$config" "$backup"
+    # Follow the existing dotfiles symlink rather than replacing it.
+    cat -- "$presets/$name.conf" > "$config"
+    if ! dunstctl reload "$config"; then
+        cat -- "$backup" > "$config"
+        dunstctl reload "$config" || true
+        printf 'Reload failed; restored the saved configuration.\n' >&2
+        exit 1
+    fi
+    printf 'Saved %s. Previous config: %s\n' "$name" "$backup"
+else
+    dunstctl reload "$presets/$name.conf"
+    printf 'Previewing %s. Save: dunst-theme apply %s | Undo: dunst-theme restore\n' "$name" "$name"
+fi
+samples "$name"
